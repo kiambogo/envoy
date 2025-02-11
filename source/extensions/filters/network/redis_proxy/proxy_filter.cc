@@ -94,6 +94,11 @@ ProxyFilter::ProxyFilter(Common::Redis::DecoderFactory& factory,
   if (auth_client != nullptr) {
     auth_client_ = std::move(auth_client);
   }
+
+  // Initialize AWS IAM authenticator if configured
+  if (config_->has_aws_iam_auth()) {
+    aws_iam_auth_ = AwsIamAuthenticatorFactory::create(config_->aws_iam_auth(), api);
+  }
 }
 
 ProxyFilter::~ProxyFilter() {
@@ -343,6 +348,8 @@ std::string ProxyFilter::getAuthPassword() {
   if (aws_iam_auth_ != nullptr) {
     return aws_iam_auth_->getAuthToken();
   }
+  
+  // Fall back to static password if configured
   return config_->downstream_auth_passwords_.empty() ? "" : config_->downstream_auth_passwords_.front();
 }
 

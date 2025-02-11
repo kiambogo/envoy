@@ -235,26 +235,25 @@ message RedisProxy {
   // AUTH, but no password is set" error will be returned.
   api.v2.core.DataSource downstream_auth_password = 6 [(udpa.annotations.sensitive) = true];
 
-  // AWS IAM authentication configuration for Redis Enterprise Cloud
-  // If specified, this will be used instead of downstream_auth_password
+  // AWS IAM authentication configuration for ElastiCache
   message AwsIamAuthConfig {
-    // AWS Region for the Redis cluster
+    // AWS Region where the ElastiCache cluster is located
     string region = 1 [(validate.rules).string = {min_bytes: 1}];
     
-    // Role ARN to assume for authentication
-    string role_arn = 2;
+    // ElastiCache user ID (e.g. AIDA5EXAMPLE)
+    string user_id = 2 [(validate.rules).string = {min_bytes: 1}];
     
-    // Optional AWS credentials provider chain configuration
-    // If not specified, default chain will be used
+    // Optional AWS credentials configuration
+    // If not specified, default credential chain will be used
     message CredentialsConfig {
       string access_key_id = 1 [(udpa.annotations.sensitive) = true];
       string secret_access_key = 2 [(udpa.annotations.sensitive) = true];
       string session_token = 3 [(udpa.annotations.sensitive) = true];
     }
     CredentialsConfig credentials = 3;
-
-    // Redis cluster identifier
-    string cluster_id = 4 [(validate.rules).string = {min_bytes: 1}];
+    
+    // Optional IAM role to assume
+    string role_arn = 4;
   }
   AwsIamAuthConfig aws_iam_auth = 7;
 }

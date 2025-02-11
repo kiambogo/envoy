@@ -164,33 +164,33 @@ For simple password-based authentication, specify the password in the configurat
   downstream_auth_password:
     inline_string: "my-password"
 
-AWS IAM Authentication
-^^^^^^^^^^^^^^^^^^^^
-For Redis Enterprise Cloud clusters that use AWS IAM authentication, configure the AWS IAM credentials:
+AWS ElastiCache IAM Authentication
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+For AWS ElastiCache clusters that use IAM authentication:
 
 .. code-block:: yaml
 
   aws_iam_auth:
-    region: "us-west-2"  # AWS Region where Redis cluster is located
-    cluster_id: "my-cluster"  # Redis Enterprise Cloud cluster ID
+    region: "us-west-2"  # AWS Region where ElastiCache cluster is located
+    user_id: "AIDA5EXAMPLE"  # ElastiCache user ID
     # Optional: Use specific credentials instead of default chain
     credentials:
       access_key_id: "AKIAXXXXXXXXXXXXXXXX"
       secret_access_key: "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
     # Optional: Assume an IAM role
-    role_arn: "arn:aws:iam::123456789012:role/redis-auth-role"
+    role_arn: "arn:aws:iam::123456789012:role/elasticache-role"
 
 The AWS IAM authenticator will:
 
 1. Use the configured credentials (or default credential chain if not specified)
-2. Generate signed authentication tokens using AWS SigV4
-3. Automatically refresh tokens before expiration
+2. Generate signed authentication tokens for ElastiCache
+3. Automatically refresh tokens before expiration (15 minutes)
 4. Handle token caching and renewal
 
 Example Configuration
 ^^^^^^^^^^^^^^^^^^^
 
-Complete example showing Redis proxy with AWS IAM authentication:
+Complete example showing Redis proxy with ElastiCache IAM authentication:
 
 .. code-block:: yaml
 
@@ -210,8 +210,7 @@ Complete example showing Redis proxy with AWS IAM authentication:
             op_timeout: 5s
           aws_iam_auth:
             region: us-west-2
-            cluster_id: my-cluster
-            role_arn: arn:aws:iam::123456789012:role/redis-auth-role
+            user_id: AIDA5EXAMPLE
           prefix_routes:
             catch_all_route:
               cluster: redis_cluster
@@ -228,13 +227,13 @@ Complete example showing Redis proxy with AWS IAM authentication:
         - endpoint:
             address:
               socket_address:
-                address: redis.example.com
+                address: my-elasticache.xxx.region.cache.amazonaws.com
                 port_value: 6379
 
 Notes:
 
 * The AWS IAM authenticator will use the default credential provider chain if no explicit credentials are provided
-* Token refresh happens automatically 15 minutes before expiration
+* Token refresh happens automatically before the 15-minute expiration
 * Failed token generation/refresh attempts are logged and retried
 * The authenticator handles concurrent requests efficiently by caching valid tokens
 

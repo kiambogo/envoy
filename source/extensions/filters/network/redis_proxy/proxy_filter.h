@@ -85,37 +85,21 @@ using ProxyFilterConfigSharedPtr = std::shared_ptr<ProxyFilterConfig>;
  * A redis multiplexing proxy filter. This filter will take incoming redis pipelined commands, and
  * multiplex them onto a consistently hashed connection pool of backend servers.
  */
-class ProxyFilter : public Network::ReadFilter,
-                    public Common::Redis::DecoderCallbacks,
-                    public Network::ConnectionCallbacks,
-                    public Logger::Loggable<Logger::Id::redis>,
-                    public ExternalAuth::AuthenticateCallback {
+class ProxyFilter : public Network::Filter,
+                   public Common::Redis::DecoderCallbacks,
+                   public Logger::Loggable<Logger::Id::redis> {
 public:
   ProxyFilter(Common::Redis::DecoderFactory& factory, Common::Redis::EncoderPtr&& encoder,
-              CommandSplitter::Instance& splitter, ProxyFilterConfigSharedPtr config,
-              ExternalAuth::ExternalAuthClientPtr&& auth_client);
-  ~ProxyFilter() override;
+              CommandSplitter::Instance& splitter, ProxyStats& stats,
+              const envoy::config::filter::network/redis_proxy::v2::RedisProxy& config,
+              Server::Configuration::FactoryContext& context);
 
-  // Network::ReadFilter
-  void initializeReadFilterCallbacks(Network::ReadFilterCallbacks& callbacks) override;
+  // Network::Filter
   Network::FilterStatus onData(Buffer::Instance& data, bool end_stream) override;
   Network::FilterStatus onNewConnection() override { return Network::FilterStatus::Continue; }
 
-  // Network::ConnectionCallbacks
-  void onEvent(Network::ConnectionEvent event) override;
-  void onAboveWriteBufferHighWatermark() override {}
-  void onBelowWriteBufferLowWatermark() override {}
-
   // Common::Redis::DecoderCallbacks
   void onRespValue(Common::Redis::RespValuePtr&& value) override;
-
-  // AuthenticateCallback
-  void onAuthenticateExternal(CommandSplitter::SplitCallbacks& request,
-                              ExternalAuth::AuthenticateResponsePtr&& response) override;
-
-  bool connectionAllowed();
-
-  Common::Redis::Client::Transaction& transaction() { return transaction_; }
 
 private:
   friend class RedisProxyFilterTest;
@@ -156,18 +140,20 @@ private:
   Common::Redis::DecoderPtr decoder_;
   Common::Redis::EncoderPtr encoder_;
   CommandSplitter::Instance& splitter_;
-  ProxyFilterConfigSharedPtr config_;
+  ProxyStats& stats_;
+  const envoy::config::filter::network/redis_proxy::v2::RedisProxy& config_;
+  Server::Configuration::FactoryContext& context_;
   Buffer::OwnedImpl encoder_buffer_;
-  Network::ReadFilterCallbacks* callbacks_{};
+  Network::FilterCallbacks* callbacks_{};
   std::list<PendingRequest> pending_requests_;
   bool connection_allowed_;
   Common::Redis::Client::Transaction transaction_;
   bool connection_quit_;
-  ExternalAuth::ExternalAuthClientPtr auth_client_;
-  ExternalAuthCallStatus external_auth_call_status_;
-  long external_auth_expiration_epoch_;
 
-  // AWS IAM Authentication
+  // Get the current auth password (either static or from AWS IAM)
+  std::string getAuthPassword();
+  
+  // AWS IAM authenticator (if configured)
   AwsIamAuthenticatorPtr aws_iam_auth_;
 };
 

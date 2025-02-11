@@ -12,8 +12,9 @@ AwsIamAuthenticatorPtr AwsIamAuthenticatorFactory::create(
   auto credentials_provider = createCredentialsProvider(config, context);
   auto signer = createSigner(config, context);
 
-  return std::make_unique<AwsIamAuthenticator>(credentials_provider, std::move(signer), 
-                                              context.timeSource());
+  return std::make_unique<AwsIamAuthenticator>(
+      config.region(), config.user_id(), credentials_provider, std::move(signer), 
+      context.timeSource());
 }
 
 Extensions::Common::Aws::CredentialsProviderSharedPtr 
@@ -43,7 +44,7 @@ AwsIamAuthenticatorFactory::createSigner(
     Server::Configuration::FactoryContext& context) {
 
   return std::make_unique<Extensions::Common::Aws::SigV4SignerImpl>(
-      "redis", config.region(),
+      "elasticache", config.region(),
       createCredentialsProvider(config, context),
       context,
       std::vector<envoy::type::matcher::v3::StringMatcher>{});

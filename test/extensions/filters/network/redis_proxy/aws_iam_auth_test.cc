@@ -40,47 +40,48 @@ protected:
   std::unique_ptr<MockTimeSystem> time_source_;
 };
 
-// Test successful token generation
+// Test successful token generation for ElastiCache
 TEST_F(AwsIamAuthTest, GetAuthTokenSuccess) {
   // Setup mock credentials
-  Extensions::Common::Aws::Credentials creds("access_key", "secret_key", "token");
+  Extensions::Common::Aws::Credentials creds("AKIATEST", "secret", "token");
   EXPECT_CALL(*credentials_provider_, getCredentials())
       .WillOnce(Return(creds));
 
   // Setup mock signer response
   Http::TestResponseHeaderMapImpl headers;
   headers.addCopy(Http::CustomHeaders::get().Authorization, 
-                 "AWS4-HMAC-SHA256 Credential=access_key/20240101/us-west-2/redis/aws4_request, "
-                 "SignedHeaders=host;x-amz-date, Signature=abcdef123456");
+                 "AWS4-HMAC-SHA256 Credential=AKIATEST/20240101/us-west-2/elasticache/aws4_request, "
+                 "SignedHeaders=host;x-amz-date;x-amz-elasticache-user-id, Signature=abcdef123456");
   
   EXPECT_CALL(*signer_, sign(testing::_, true))
       .WillOnce(Return(absl::OkStatus()));
 
   // Create authenticator
-  AwsIamAuthenticator auth(credentials_provider_, std::move(signer_), *time_source_);
+  AwsIamAuthenticator auth("us-west-2", "AIDATEST", credentials_provider_, std::move(signer_), 
+                          *time_source_);
 
   // Get auth token
   std::string token = auth.getAuthToken();
   
-  // Verify token format: <access_key>:<signature>:<session_token>
-  EXPECT_EQ(token, "access_key:abcdef123456:token");
+  // Verify ElastiCache token format: user-<access_key_id>:<signature>
+  EXPECT_EQ(token, "user-AKIATEST:abcdef123456");
 }
 
 // Test token caching
 TEST_F(AwsIamAuthTest, TokenCaching) {
-  Extensions::Common::Aws::Credentials creds("access_key", "secret_key", "token");
+  Extensions::Common::Aws::Credentials creds("AKIATEST", "secret", "token");
   EXPECT_CALL(*credentials_provider_, getCredentials())
       .WillOnce(Return(creds));
 
   Http::TestResponseHeaderMapImpl headers;
   headers.addCopy(Http::CustomHeaders::get().Authorization,
-                 "AWS4-HMAC-SHA256 Credential=access_key/20240101/us-west-2/redis/aws4_request, "
-                 "SignedHeaders=host;x-amz-date, Signature=abcdef123456");
+                 "AWS4-HMAC-SHA256 Signature=abcdef123456");
 
   EXPECT_CALL(*signer_, sign(testing::_, true))
       .WillOnce(Return(absl::OkStatus()));
 
-  AwsIamAuthenticator auth(credentials_provider_, std::move(signer_), *time_source_);
+  AwsIamAuthenticator auth("us-west-2", "AIDATEST", credentials_provider_, std::move(signer_), 
+                          *time_source_);
 
   // First call should generate token
   std::string token1 = auth.getAuthToken();
@@ -92,7 +93,7 @@ TEST_F(AwsIamAuthTest, TokenCaching) {
 
 // Test token refresh after expiration
 TEST_F(AwsIamAuthTest, TokenRefresh) {
-  Extensions::Common::Aws::Credentials creds("access_key", "secret_key", "token");
+  Extensions::Common::Aws::Credentials creds("AKIATEST", "secret", "token");
   EXPECT_CALL(*credentials_provider_, getCredentials())
       .Times(2)
       .WillRepeatedly(Return(creds));
@@ -107,12 +108,13 @@ TEST_F(AwsIamAuthTest, TokenRefresh) {
       .Times(2)
       .WillRepeatedly(Return(absl::OkStatus()));
 
-  AwsIamAuthenticator auth(credentials_provider_, std::move(signer_), *time_source_);
+  AwsIamAuthenticator auth("us-west-2", "AIDATEST", credentials_provider_, std::move(signer_), 
+                          *time_source_);
 
   // Get initial token
   std::string token1 = auth.getAuthToken();
 
-  // Advance time past token expiry
+  // Advance time past token expiry (15 minutes)
   time_source_->advanceTimeWait(std::chrono::seconds(901));
 
   // Should get new token
@@ -127,7 +129,7 @@ public:
     // Setup filter config with AWS IAM auth
     envoy::config::filter::network::redis_proxy::v2::RedisProxy::AwsIamAuthConfig aws_config;
     aws_config.set_region("us-west-2");
-    aws_config.set_cluster_id("test-cluster");
+    aws_config.set_user_id("AIDATEST");
     
     config_.mutable_aws_iam_auth()->CopyFrom(aws_config);
   }
@@ -137,7 +139,7 @@ protected:
   NiceMock<Server::Configuration::MockFactoryContext> factory_context_;
 };
 
-// Test Redis AUTH command with AWS IAM token
+// Test Redis AUTH command with ElastiCache IAM token
 TEST_F(RedisProxyAwsAuthTest, AuthCommandWithAwsToken) {
   // Create filter with AWS IAM auth config
   auto aws_auth = AwsIamAuthenticatorFactory::create(config_.aws_iam_auth(), factory_context_);
