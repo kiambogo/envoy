@@ -2,6 +2,7 @@ load(
     "//bazel:envoy_build_system.bzl",
     "envoy_cc_mock",
     "envoy_package",
+    "envoy_cc_test",
 )
 load(
     "//test/extensions:extensions_build_system.bzl",
@@ -216,4 +217,15 @@ envoy_extension_benchmark_test(
     name = "command_split_speed_test_benchmark_test",
     benchmark_binary = "command_split_speed_test",
     extension_names = ["envoy.filters.network.redis_proxy"],
+)
+
+envoy_cc_test(
+    name = "aws_iam_auth_test",
+    srcs = ["aws_iam_auth_test.cc"],
+    deps = [
+        "//source/extensions/filters/network/redis_proxy:aws_iam_auth_lib",
+        "//test/mocks/common:common_mocks",
+        "//test/mocks/server:factory_context_mocks",
+        "//test/test_common:utility_lib",
+    ],
 )

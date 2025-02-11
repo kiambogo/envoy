@@ -3,6 +3,12 @@
 Redis proxy
 ===========
 
+.. contents::
+  :local:
+
+The Redis proxy filter allows Envoy to split commands to multiple Redis servers. 
+This filter supports request routing, consistent hashing, pipelining, fault tolerance, authentication and more.
+
 * Redis :ref:`architecture overview <arch_overview_redis>`
 * This filter should be configured with the type URL ``type.googleapis.com/envoy.extensions.filters.network.redis_proxy.v3.RedisProxy``.
 * :ref:`v3 API reference <envoy_v3_api_msg_extensions.filters.network.redis_proxy.v3.RedisProxy>`
@@ -141,3 +147,95 @@ As noted in the :ref:`architecture overview <arch_overview_redis>`, when Envoy s
         name: dns_cache_for_redis
         dns_lookup_family: V4_ONLY
         max_hosts: 100
+
+.. _config_network_filters_redis_proxy_auth:
+
+Authentication
+-------------
+
+The Redis proxy filter supports multiple authentication methods:
+
+Static Password Authentication
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+For simple password-based authentication, specify the password in the configuration:
+
+.. code-block:: yaml
+
+  downstream_auth_password:
+    inline_string: "my-password"
+
+AWS IAM Authentication
+^^^^^^^^^^^^^^^^^^^^
+For Redis Enterprise Cloud clusters that use AWS IAM authentication, configure the AWS IAM credentials:
+
+.. code-block:: yaml
+
+  aws_iam_auth:
+    region: "us-west-2"  # AWS Region where Redis cluster is located
+    cluster_id: "my-cluster"  # Redis Enterprise Cloud cluster ID
+    # Optional: Use specific credentials instead of default chain
+    credentials:
+      access_key_id: "AKIAXXXXXXXXXXXXXXXX"
+      secret_access_key: "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+    # Optional: Assume an IAM role
+    role_arn: "arn:aws:iam::123456789012:role/redis-auth-role"
+
+The AWS IAM authenticator will:
+
+1. Use the configured credentials (or default credential chain if not specified)
+2. Generate signed authentication tokens using AWS SigV4
+3. Automatically refresh tokens before expiration
+4. Handle token caching and renewal
+
+Example Configuration
+^^^^^^^^^^^^^^^^^^^
+
+Complete example showing Redis proxy with AWS IAM authentication:
+
+.. code-block:: yaml
+
+  listeners:
+  - name: redis_listener
+    address:
+      socket_address:
+        address: 0.0.0.0
+        port_value: 6379
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.redis_proxy
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.redis_proxy.v3.RedisProxy
+          stat_prefix: redis_stats
+          settings:
+            op_timeout: 5s
+          aws_iam_auth:
+            region: us-west-2
+            cluster_id: my-cluster
+            role_arn: arn:aws:iam::123456789012:role/redis-auth-role
+          prefix_routes:
+            catch_all_route:
+              cluster: redis_cluster
+
+  clusters:
+  - name: redis_cluster
+    connect_timeout: 1s
+    type: strict_dns
+    lb_policy: MAGLEV
+    load_assignment:
+      cluster_name: redis_cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: redis.example.com
+                port_value: 6379
+
+Notes:
+
+* The AWS IAM authenticator will use the default credential provider chain if no explicit credentials are provided
+* Token refresh happens automatically 15 minutes before expiration
+* Failed token generation/refresh attempts are logged and retried
+* The authenticator handles concurrent requests efficiently by caching valid tokens
+
+See the :ref:`Redis proxy statistics <config_network_filters_redis_proxy_stats>` documentation for metrics related to authentication.

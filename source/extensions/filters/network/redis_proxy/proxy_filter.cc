@@ -10,6 +10,7 @@
 #include "source/common/common/fmt.h"
 #include "source/common/config/datasource.h"
 #include "source/common/config/utility.h"
+#include "source/extensions/filters/network/redis_proxy/aws_iam_auth_factory.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -53,6 +54,11 @@ ProxyFilterConfig::ProxyFilterConfig(
         downstream_auth_passwords_.emplace_back(p);
       }
     }
+  }
+
+  // Initialize AWS IAM authenticator if configured
+  if (config.has_aws_iam_auth()) {
+    aws_iam_auth_ = AwsIamAuthenticatorFactory::create(config.aws_iam_auth(), api);
   }
 }
 
@@ -330,6 +336,47 @@ ProxyFilter::PendingRequest::PendingRequest(ProxyFilter& parent) : parent_(paren
 
 ProxyFilter::PendingRequest::~PendingRequest() {
   parent_.config_->stats_.downstream_rq_active_.dec();
+}
+
+std::string ProxyFilter::getAuthPassword() {
+  // If AWS IAM auth is configured, use it instead of static password
+  if (aws_iam_auth_ != nullptr) {
+    return aws_iam_auth_->getAuthToken();
+  }
+  return config_->downstream_auth_passwords_.empty() ? "" : config_->downstream_auth_passwords_.front();
+}
+
+void ProxyFilter::onAuth(Common::Redis::RespValuePtr&& value) {
+  const std::string auth_password = getAuthPassword();
+  if (!auth_password.empty()) {
+    // Check if value is an array of size 2 (AUTH <password>)
+    if (value->type() != Common::Redis::RespType::Array || value->asArray().size() != 2 ||
+        value->asArray()[1]->type() != Common::Redis::RespType::BulkString) {
+      onInvalidRequest(value.get());
+      return;
+    }
+    
+    if (value->asArray()[1]->asString() != auth_password) {
+      Common::Redis::RespValuePtr response(new Common::Redis::RespValue());
+      response->type(Common::Redis::RespType::Error);
+      response->asString() = "ERR invalid password";
+      encoder_->encode(*response, encoder_buffer_);
+      callbacks_->connection().write(encoder_buffer_, false);
+      config_->stats_.auth_failed_.inc();
+      return;
+    }
+    
+    connection_allowed_ = true;
+    Common::Redis::RespValuePtr response(new Common::Redis::RespValue());
+    response->type(Common::Redis::RespType::SimpleString);
+    response->asString() = "OK";
+    encoder_->encode(*response, encoder_buffer_);
+    callbacks_->connection().write(encoder_buffer_, false);
+    config_->stats_.auth_success_.inc();
+    return;
+  }
+  
+  // ... rest of existing onAuth implementation ...
 }
 
 } // namespace RedisProxy

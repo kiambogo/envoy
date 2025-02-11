@@ -17,6 +17,7 @@
 #include "source/extensions/filters/network/common/redis/codec.h"
 #include "source/extensions/filters/network/redis_proxy/command_splitter.h"
 #include "source/extensions/filters/network/redis_proxy/external_auth.h"
+#include "source/extensions/filters/network/redis_proxy/aws_iam_auth.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -165,6 +166,9 @@ private:
   ExternalAuth::ExternalAuthClientPtr auth_client_;
   ExternalAuthCallStatus external_auth_call_status_;
   long external_auth_expiration_epoch_;
+
+  // AWS IAM Authentication
+  AwsIamAuthenticatorPtr aws_iam_auth_;
 };
 
 } // namespace RedisProxy
