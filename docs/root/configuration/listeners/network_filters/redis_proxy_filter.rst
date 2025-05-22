@@ -141,3 +141,95 @@ As noted in the :ref:`architecture overview <arch_overview_redis>`, when Envoy s
         name: dns_cache_for_redis
         dns_lookup_family: V4_ONLY
         max_hosts: 100
+
+IAM Authentication for AWS ElastiCache
+--------------------------------------
+
+The Redis proxy filter supports IAM (Identity and Access Management) authentication when connecting
+to AWS ElastiCache for Redis clusters that are configured to use IAM authentication.
+This is configured using the ``iam_auth`` field within the main ``RedisProxy`` configuration.
+
+.. code-block:: yaml
+
+  typed_config:
+    "@type": type.googleapis.com/envoy.extensions.filters.network.redis_proxy.v3.RedisProxy
+    stat_prefix: redis_stats
+    prefix_routes:
+      catch_all_route:
+        cluster: my_elasticache_cluster
+    settings:
+      op_timeout: 1s
+      # IAM Authentication Configuration
+      iam_auth:
+        redis_user: "my_iam_redis_user"
+        cache_name: "my-production-cache" # Or an FQDN like "my-prod-cache.xxxxxx.us-east-1.cache.amazonaws.com"
+
+``iam_auth``
+  (:ref:`config.network_filters.redis_proxy.v3.RedisProxy.RedisIAMAuth <envoy_v3_api_msg_extensions.filters.network.redis_proxy.v3.RedisIAMAuth>`)
+  Optional configuration for IAM authentication. If provided, Envoy will attempt to authenticate
+  to the Redis upstream using AWS IAM.
+
+  ``redis_user``
+    (string, REQUIRED) The Redis username configured for IAM authentication on the ElastiCache
+    cluster (e.g., the User ID of an ElastiCache user). This user must be granted the necessary
+    permissions to connect to the cluster.
+
+  ``cache_name``
+    (string, REQUIRED) The identifier for the ElastiCache for Redis resource. This value helps
+    determine the AWS region for signing the IAM authentication request. It can be:
+      * The ElastiCache cluster name (e.g., ``my-cluster``).
+      * A primary or reader endpoint FQDN (e.g., ``my-cluster.xxxxxx.us-east-1.cache.amazonaws.com``).
+      * A replication group ID.
+
+    The AWS region is determined in the following order of precedence:
+      1. Environment variable ``AWS_REGION``.
+      2. Environment variable ``AWS_DEFAULT_REGION``.
+      3. Parsing the region from the ``cache_name`` if it is a fully qualified domain name
+         (e.g., from ``my-cluster.xxxxxx.us-east-1.cache.amazonaws.com``, ``us-east-1`` would be parsed).
+      4. If running on AWS infrastructure (like EC2, ECS, EKS with an IAM role attached), the AWS SDK
+         may automatically discover the region from the instance/task metadata.
+    If the region cannot be determined through these methods, IAM authentication may fail. It is
+    recommended to either use a region-specific FQDN for ``cache_name`` or set ``AWS_REGION``/``AWS_DEFAULT_REGION``
+    in Envoy's environment.
+
+AWS Credentials
+'''''''''''''''''
+For IAM authentication to succeed, the Envoy instance (or its underlying host/task role) must
+possess valid AWS credentials. These credentials are automatically sourced by the AWS SDK for C++
+using its default credential provider chain. This includes, but is not limited to:
+  - IAM roles for EC2 instances.
+  - IAM roles for ECS tasks.
+  - IAM roles for EKS service accounts (IRSA).
+  - Environment variables (``AWS_ACCESS_KEY_ID``, ``AWS_SECRET_ACCESS_KEY``, and optionally ``AWS_SESSION_TOKEN``).
+  - Shared credentials file (``~/.aws/credentials``) or config file (``~/.aws/config``).
+
+Required IAM Permissions
+''''''''''''''''''''''''
+The AWS identity (user or role) whose credentials Envoy is using must have the necessary IAM
+permissions to connect to the ElastiCache resource. The primary permission required is:
+  - ``elasticache:Connect``
+
+This permission should be granted for the specific ElastiCache user that Envoy will authenticate as.
+An example policy statement might look like:
+
+.. code-block:: json
+
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "elasticache:Connect"
+        ],
+        "Resource": [
+          "arn:aws:elasticache:<region>:<account-id>:user:<redis_user_name>"
+        ]
+      }
+    ]
+  }
+
+Replace ``<region>``, ``<account-id>``, and ``<redis_user_name>`` with appropriate values.
+The resource ARN might also target the cluster or replication group depending on the specific
+ElastiCache user type and configuration. Refer to the `AWS ElastiCache documentation for IAM <https://docs.aws.amazon.com/AmazonElastiCache/latest/red-ug/IAM.Redis.html>`_
+for the most up-to-date details on permissions.

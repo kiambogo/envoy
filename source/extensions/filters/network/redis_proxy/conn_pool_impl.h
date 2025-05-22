@@ -31,6 +31,14 @@
 
 #include "absl/container/node_hash_map.h"
 
+// AWS SDK includes
+#include "aws/core/Aws.h"
+#include "aws/core/auth/AWSCredentialsProvider.h"
+#include "aws/core/auth/signer/AWSAuthV4Signer.h"
+#include "aws/core/http/standard/StandardHttpRequest.h"
+#include "aws/core/utils/Outcome.h"
+#include "aws/elasticache/ElastiCacheClient.h"
+
 namespace Envoy {
 namespace Extensions {
 namespace NetworkFilters {
@@ -88,11 +96,19 @@ public:
   makeRequestToHost(const std::string& host_address, const Common::Redis::RespValue& request,
                     Common::Redis::Client::ClientCallbacks& callbacks);
   void init();
+  std::string generateIAMAuthToken(const std::string& redis_user, const std::string& cache_name_or_host, const std::string& region);
 
   // Allow the unit test to have access to private members.
   friend class RedisConnPoolImplTest;
 
 private:
+  bool iam_auth_enabled_ = false;
+  std::string redis_user_;
+  std::string cache_name_;
+  std::shared_ptr<Aws::Auth::AWSCredentialsProvider> aws_credentials_provider_;
+  std::shared_ptr<Aws::Client::ClientConfiguration> aws_client_config_;
+
+
   struct ThreadLocalPool;
 
   struct ThreadLocalActiveClient : public Network::ConnectionCallbacks {
@@ -103,9 +119,18 @@ private:
     void onAboveWriteBufferHighWatermark() override {}
     void onBelowWriteBufferLowWatermark() override {}
 
+    void sendIAMAuthRequest();
+    void onIAMAuthResponse(Common::Redis::RespValuePtr&& response);
+    void handleAuthFailure(const std::string& reason);
+
+
     ThreadLocalPool& parent_;
     Upstream::HostConstSharedPtr host_;
     Common::Redis::Client::ClientPtr redis_client_;
+    bool iam_auth_pending_ = false;
+    bool iam_auth_completed_ = false;
+    // Stores pending requests that arrived while IAM auth is in progress.
+    std::list<PendingRequest*> iam_waiting_requests_;
   };
 
   using ThreadLocalActiveClientPtr = std::unique_ptr<ThreadLocalActiveClient>;
@@ -195,6 +220,9 @@ private:
     absl::node_hash_map<std::string, Upstream::HostConstSharedPtr> host_address_map_;
     std::string auth_username_;
     std::string auth_password_;
+    bool iam_auth_enabled_ = false;
+    std::string redis_user_;
+    std::string cache_name_;
     std::list<Upstream::HostSharedPtr> created_via_redirect_hosts_;
     std::list<ThreadLocalActiveClientPtr> clients_to_drain_;
     std::list<PendingRequest> pending_requests_;
@@ -226,6 +254,9 @@ private:
   RedisClusterStats redis_cluster_stats_;
   const Extensions::Common::Redis::ClusterRefreshManagerSharedPtr refresh_manager_;
   const Extensions::Common::DynamicForwardProxy::DnsCacheSharedPtr dns_cache_{nullptr};
+  // AWS SDK specific members
+  Aws::SDKOptions aws_sdk_options_;
+
 };
 
 } // namespace ConnPool

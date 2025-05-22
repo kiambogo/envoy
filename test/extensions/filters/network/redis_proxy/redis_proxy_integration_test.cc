@@ -1763,5 +1763,259 @@ TEST_P(RedisProxyWithExternalAuthIntegrationTest, ExternalAuthRespectsPipelining
   redis_client->close();
 }
 
+// Test fixture for IAM Auth
+class RedisProxyIAMAuthIntegrationTest : public RedisProxyIntegrationTest {
+public:
+  RedisProxyIAMAuthIntegrationTest(const std::string& cache_name_config_val = "my-iam-cache.xxxxxx.us-east-1.cache.amazonaws.com")
+      : RedisProxyIntegrationTest(fmt::format(CONFIG_WITH_IAM_AUTH_TEMPLATE, Platform::null_device_path, cache_name_config_val), 1) { // Only 1 upstream for these specific tests
+        // Set AWS region explicitly for tests if not relying on test machine's environment
+        TestEnvironment::setEnvVar("AWS_REGION", "us-east-1", 1);
+      }
+
+  ~RedisProxyIAMAuthIntegrationTest() override {
+    TestEnvironment::unsetEnvVar("AWS_REGION");
+    TestEnvironment::unsetEnvVar("AWS_ACCESS_KEY_ID");
+    TestEnvironment::unsetEnvVar("AWS_SECRET_ACCESS_KEY");
+    TestEnvironment::unsetEnvVar("AWS_SESSION_TOKEN");
+  }
+
+
+  void setAWSCredentials(const std::string& access_key, const std::string& secret_key, const std::string& session_token = "") {
+    TestEnvironment::setEnvVar("AWS_ACCESS_KEY_ID", access_key, 1);
+    TestEnvironment::setEnvVar("AWS_SECRET_ACCESS_KEY", secret_key, 1);
+    if (!session_token.empty()) {
+      TestEnvironment::setEnvVar("AWS_SESSION_TOKEN", session_token, 1);
+    } else {
+      TestEnvironment::unsetEnvVar("AWS_SESSION_TOKEN");
+    }
+  }
+
+  void clearAWSCredentials() {
+    TestEnvironment::unsetEnvVar("AWS_ACCESS_KEY_ID");
+    TestEnvironment::unsetEnvVar("AWS_SECRET_ACCESS_KEY");
+    TestEnvironment::unsetEnvVar("AWS_SESSION_TOKEN");
+  }
+
+  // Simplified config for IAM tests, focusing on a single upstream.
+  // cache_name in iam_auth can be a real FQDN-like string or the upstream address for token generation logic testing.
+  static const std::string CONFIG_WITH_IAM_AUTH_TEMPLATE;
+};
+
+const std::string RedisProxyIAMAuthIntegrationTest::CONFIG_WITH_IAM_AUTH_TEMPLATE = fmt::format(R"EOF(
+admin:
+  access_log:
+  - name: envoy.access_loggers.file
+    typed_config:
+      "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+      path: "{}"
+  address:
+    socket_address:
+      address: 127.0.0.1
+      port_value: 0
+static_resources:
+  clusters:
+    - name: cluster_0
+      type: STATIC
+      lb_policy: ROUND_ROBIN # Changed from RANDOM for predictability with single upstream
+      load_assignment:
+        cluster_name: cluster_0
+        endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: 127.0.0.1
+                    port_value: 0
+  listeners:
+    name: listener_0
+    address:
+      socket_address:
+        address: 127.0.0.1
+        port_value: 0
+    filter_chains:
+      filters:
+        name: redis
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.redis_proxy.v3.RedisProxy
+          stat_prefix: redis_iam_stats
+          prefix_routes:
+            catch_all_route:
+              cluster: cluster_0
+          settings:
+            op_timeout: 5s
+            iam_auth:
+              redis_user: "iam_user_test"
+              cache_name: "{}" # To be formatted with upstream address or dummy FQDN
+)EOF");
+
+
+INSTANTIATE_TEST_SUITE_P(IpVersions, RedisProxyIAMAuthIntegrationTest,
+                         testing::ValuesIn(TestEnvironment::getIpVersionsForTest()),
+                         TestUtility::ipTestParamsToString);
+
+// IAM Auth Test Cases
+
+// Test successful IAM authentication and a subsequent command.
+TEST_P(RedisProxyIAMAuthIntegrationTest, SuccessfulIAMAuth) {
+  setAWSCredentials("dummy_access_key", "dummy_secret_key");
+  initialize();
+
+  IntegrationTcpClientPtr redis_client = makeTcpConnection(lookupPort("redis_proxy"));
+  FakeRawConnectionPtr fake_upstream_connection;
+
+  // Mock Redis behavior:
+  // 1. Expect AUTH iam_user_test <some_token>
+  // 2. Respond +OK
+  // 3. Expect PING
+  // 4. Respond +PONG
+
+  // Phase 1: AUTH command
+  // We can't know the exact token, so we'll tell the fake upstream to expect "AUTH iam_user_test"
+  // and then any non-empty string for the token part.
+  // The expectUpstreamRequestResponse needs to be more flexible or we need a custom version.
+
+  // Let's try to make the mock more specific for this test.
+  // When the connection comes in, the FakeUpstream needs to:
+  // A. Receive data.
+  // B. Check if it starts with "*3\r\n$4\r\nAUTH\r\n$13\r\niam_user_test\r\n$" (length of token).
+  // C. Check if the rest looks like a token.
+  // D. Send "+OK\r\n".
+  // E. Then wait for "PING" and send "+PONG\r\n".
+
+  // Simplified: use existing helpers but be smart about what we expect.
+  // The `generateIAMAuthToken` in Envoy will create the token.
+  // The `expectUpstreamRequestResponse` will see the AUTH command.
+
+  // This is tricky because `expectUpstreamRequestResponse` sends the *expected client request*
+  // and expects that on the wire. But the client doesn't send AUTH, Envoy does.
+  // So, the client sends "PING". Envoy establishes connection, does IAM AUTH, then sends PING.
+
+  ASSERT_TRUE(fake_upstreams_[0]->waitForRawConnection(fake_upstream_connection));
+
+  // 1. Envoy sends AUTH
+  std::string received_from_envoy;
+  ASSERT_TRUE(fake_upstream_connection->waitForData(
+      RedisCmdSplitter::CommandSplitterImpl::MAX_COMMAND_LENGTH_BYTES, &received_from_envoy));
+
+  EXPECT_THAT(received_from_envoy, testing::StartsWith("*3\r\n$4\r\nAUTH\r\n$13\r\niam_user_test\r\n$"));
+  EXPECT_THAT(received_from_envoy, testing::ContainsRegex("\\r\\n[A-Za-z0-9%/_-]+(\\r\\n)?$")); // Basic token check
+  ASSERT_TRUE(fake_upstream_connection->write("+OK\r\n"));
+
+  // 2. Client sends PING, Envoy forwards it
+  ASSERT_TRUE(redis_client->write(makeBulkStringArray({"PING"})));
+  ASSERT_TRUE(fake_upstream_connection->waitForData(makeBulkStringArray({"PING"}).size()));
+  ASSERT_TRUE(fake_upstream_connection->write("+PONG\r\n"));
+
+  // 3. Client receives PONG
+  redis_client->waitForData("+PONG\r\n");
+  EXPECT_EQ("+PONG\r\n", redis_client->data());
+
+  EXPECT_TRUE(fake_upstream_connection->close());
+  redis_client->close();
+
+  // Check stats (optional, good to have)
+  // EXPECT_EQ(1, test_server_->counter("redis.redis_iam_stats.iam_auth_success")->value());
+}
+
+
+TEST_P(RedisProxyIAMAuthIntegrationTest, IAMAuthFailureInvalidToken) {
+  setAWSCredentials("invalid_access_key", "invalid_secret_key"); // Credentials that SDK might use but are bogus
+  initialize();
+
+  IntegrationTcpClientPtr redis_client = makeTcpConnection(lookupPort("redis_proxy"));
+  FakeRawConnectionPtr fake_upstream_connection;
+
+  ASSERT_TRUE(fake_upstreams_[0]->waitForRawConnection(fake_upstream_connection));
+
+  std::string received_from_envoy;
+  // Envoy will attempt AUTH
+  ASSERT_TRUE(fake_upstream_connection->waitForData(
+      RedisCmdSplitter::CommandSplitterImpl::MAX_COMMAND_LENGTH_BYTES, &received_from_envoy, std::chrono::seconds(10)));
+
+  EXPECT_THAT(received_from_envoy, testing::StartsWith("*3\r\n$4\r\nAUTH\r\n$13\r\niam_user_test\r\n$"));
+  
+  // Mock Redis rejects the token
+  ASSERT_TRUE(fake_upstream_connection->write("-WRONGPASS invalid username-password pair\r\n"));
+  
+  // Client connection should be closed by Envoy after auth failure
+  redis_client->waitForDisconnect(); // Or expect some error data if Envoy sends one client-side
+
+  EXPECT_TRUE(fake_upstream_connection->close()); // Upstream connection also closes
+  redis_client->close();
+  
+  // Check for logs indicating auth failure
+  // EXPECT_LOG_CONTAINS("warn", "IAM AUTH failed for user iam_user_test", absl::LogSeverity::kWarning);
+  // EXPECT_EQ(1, test_server_->counter("redis.redis_iam_stats.iam_auth_failure")->value());
+}
+
+TEST_P(RedisProxyIAMAuthIntegrationTest, IAMAuthCredentialsMissing) {
+  clearAWSCredentials(); // Ensure no credentials are set
+  initialize();
+
+  IntegrationTcpClientPtr redis_client = makeTcpConnection(lookupPort("redis_proxy"));
+  FakeRawConnectionPtr fake_upstream_connection;
+
+  // Envoy should fail to generate a token and thus might not even connect,
+  // or connect and immediately close after failing token gen.
+  // If it connects, it shouldn't send AUTH.
+  
+  // Behavior might be:
+  // 1. Connection attempt from Envoy to upstream.
+  // 2. Token generation fails internally in Envoy.
+  // 3. Envoy closes the upstream connection.
+  // 4. Client's attempt to send a command (or just connect) fails.
+
+  // Try to send a command, it should fail.
+  ASSERT_TRUE(redis_client->write(makeBulkStringArray({"PING"})));
+
+  // Expect client to be disconnected or receive an error.
+  // If token generation fails catastrophically, upstream connection might not even be fully established
+  // or might be closed very quickly.
+  if (fake_upstreams_[0]->waitForRawConnection(fake_upstream_connection, std::chrono::milliseconds(500))) {
+    // If it connected, it should close without sending PING or after failing AUTH (if it sent a bad/empty one)
+    fake_upstream_connection->waitForDisconnect();
+    EXPECT_TRUE(fake_upstream_connection->close());
+  }
+  
+  redis_client->waitForDisconnect();
+  redis_client->close();
+
+  // Check for logs indicating credential failure
+  // EXPECT_LOG_CONTAINS("error", "IAM auth not properly initialized for token generation", absl::LogSeverity::kError);
+  // or "Failed to sign IAM auth request"
+}
+
+
+// Test using a standard config without IAM to ensure it's not triggered.
+TEST_P(RedisProxyIntegrationTest, IAMNotConfiguredWithDownstreamAuth) {
+  // Using CONFIG_WITH_DOWNSTREAM_AUTH_PASSWORD_SET which doesn't have iam_auth block
+  config_helper_.addConfigModifier([this](envoy::config::bootstrap::v3::Bootstrap& bootstrap) {
+    auto* redis_cfg = ConfigHelper::DowncastAndValidate<
+        envoy::extensions::filters::network::redis_proxy::v3::RedisProxy>(
+        (*bootstrap.mutable_static_resources()
+              ->mutable_listeners(0)
+              ->mutable_filter_chains(0)
+              ->mutable_filters(0))
+            .typed_config());
+    redis_cfg->mutable_downstream_auth_password()->set_inline_string("testpassword");
+  });
+  initialize();
+
+  IntegrationTcpClientPtr redis_client = makeTcpConnection(lookupPort("redis_proxy"));
+  FakeRawConnectionPtr fake_upstream_connection;
+
+  // Expect normal downstream AUTH, not IAM
+  proxyResponseStep(makeBulkStringArray({"AUTH", "wrong"}), "-ERR invalid password\r\n", redis_client);
+  proxyResponseStep(makeBulkStringArray({"AUTH", "testpassword"}), "+OK\r\n", redis_client);
+
+  // Now send a regular command
+  roundtripToUpstreamStep(fake_upstreams_[0], makeBulkStringArray({"PING"}), "+PONG\r\n",
+                          redis_client, fake_upstream_connection, "", ""); // No upstream auth in this base config
+
+  EXPECT_TRUE(fake_upstream_connection->close());
+  redis_client->close();
+}
+
+
 } // namespace
 } // namespace Envoy

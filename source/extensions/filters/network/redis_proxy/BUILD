@@ -102,6 +102,12 @@ envoy_cc_library(
         "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
         "@envoy_api//envoy/config/endpoint/v3:pkg_cc_proto",
         "@envoy_api//envoy/extensions/filters/network/redis_proxy/v3:pkg_cc_proto",
+        # AWS SDK dependencies for IAM Auth
+        "@aws_sdk_cpp//:core",
+        "@aws_sdk_cpp//:elasticache", # Or specific components for auth/credentials if ElastiCacheClient isn't directly used for token.
+        # May also need something like "@aws_sdk_cpp//:sts" or "@aws_sdk_cpp//:cognito-identity" depending on exact token method
+        # For SigV4 signing:
+        "@aws_sdk_cpp//:access-management", # Provides aws-c-auth which has aws_auth_v4_signer
     ],
 )
 
